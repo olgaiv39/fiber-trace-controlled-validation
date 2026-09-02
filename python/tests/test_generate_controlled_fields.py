@@ -114,6 +114,11 @@ class ControlledFieldTests(unittest.TestCase):
             self.assertEqual((first / "normal" / "grad_mag.zarr" / "0.0.0").read_bytes()[0], 255)
             self.assertEqual((first / "normal" / "nx.zarr" / "0.0.0").read_bytes()[0], 128)
             self.assertEqual((first / "normal" / "ny.zarr" / "0.0.0").read_bytes()[0], 128)
+            normal_manifest = json.loads((first / "normal" / "normal.lasagna.json").read_text())
+            self.assertEqual(normal_manifest["grad_mag_encode_scale"], 255.0)
+            self.assertEqual(normal_manifest["grad_mag_factor"], 1.0)
+            self.assertEqual(255.0 / (normal_manifest["grad_mag_encode_scale"] /
+                                      normal_manifest["grad_mag_factor"]), 1.0)
 
 
 if __name__ == "__main__":

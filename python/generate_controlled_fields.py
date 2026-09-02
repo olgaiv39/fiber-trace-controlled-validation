@@ -206,7 +206,12 @@ def write_zarr_u8(path: Path, array: np.ndarray) -> None:
                 (path / f"{z0 // chunk[0]}.{y0 // chunk[1]}.{x0 // chunk[2]}").write_bytes(full.tobytes(order="C"))
 
 
-def write_manifest(path: Path, shape_zyx: tuple[int, int, int], groups: dict[str, tuple[str, list[str]]]) -> None:
+def write_manifest(
+    path: Path,
+    shape_zyx: tuple[int, int, int],
+    groups: dict[str, tuple[str, list[str]]],
+    root_fields: dict[str, float] | None = None,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "version": 2,
@@ -217,6 +222,8 @@ def write_manifest(path: Path, shape_zyx: tuple[int, int, int], groups: dict[str
             for name, (zarr_path, channels) in groups.items()
         },
     }
+    if root_fields is not None:
+        document.update(root_fields)
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
@@ -261,7 +268,7 @@ def generate(nml_path: Path, cases_path: Path, output_dir: Path, tube_radius: fl
     normal_manifest = normal_root / "normal.lasagna.json"
     write_manifest(normal_manifest, shape_zyx, {
         name: (f"{name}.zarr", [name]) for name in normal_arrays
-    })
+    }, {"grad_mag_encode_scale": 255.0, "grad_mag_factor": 1.0})
 
     generated_cases = []
     for item in source_cases:
