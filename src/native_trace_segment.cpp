@@ -2,6 +2,7 @@
 #include "vc/lasagna/Dataset.hpp"
 #include "vc/lasagna/LasagnaNormalSampler.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -25,7 +27,166 @@ struct Options {
     std::filesystem::path spansPath;
     std::filesystem::path outputPath;
     int inferenceScaledownPower = 0;
+    bool selfTestFilter = false;
 };
+
+enum class PredictionSourceMode {
+    Native,
+    Delegated,
+    ZeroInvalid,
+};
+
+constexpr std::array<PredictionSourceMode, 3> kPredictionSourceModes{
+    PredictionSourceMode::Native,
+    PredictionSourceMode::Delegated,
+    PredictionSourceMode::ZeroInvalid,
+};
+
+[[nodiscard]] const char* predictionSourceModeName(PredictionSourceMode mode)
+{
+    switch (mode) {
+    case PredictionSourceMode::Native:
+        return "native";
+    case PredictionSourceMode::Delegated:
+        return "delegated";
+    case PredictionSourceMode::ZeroInvalid:
+        return "zero_invalid";
+    }
+    throw std::logic_error("unknown prediction source mode");
+}
+
+[[nodiscard]] vc::fiber_tracer::FiberPredictionSample transformSample(
+    vc::fiber_tracer::FiberPredictionSample sample,
+    bool invalidateZeroPresence)
+{
+    if (!invalidateZeroPresence)
+        return sample;
+
+    vc::fiber_tracer::FiberPredictionSampleOptions transformed;
+    transformed.reserve(sample.options.size());
+    for (const auto& option : sample.options) {
+        auto transformedOption = option;
+        if (transformedOption.valid && transformedOption.presence == 0.0f)
+            transformedOption.valid = false;
+        transformed.push_back(transformedOption);
+    }
+    sample.options = std::move(transformed);
+    return sample;
+}
+
+void transformSamples(
+    std::vector<vc::fiber_tracer::FiberPredictionSample>& samples,
+    bool invalidateZeroPresence)
+{
+    if (!invalidateZeroPresence)
+        return;
+    for (auto& sample : samples)
+        sample = transformSample(std::move(sample), true);
+}
+
+class DelegatingPredictionSource final : public vc::fiber_tracer::FiberPredictionSource {
+public:
+    DelegatingPredictionSource(
+        const vc::fiber_tracer::FiberPredictionField& field,
+        bool invalidateZeroPresence)
+        : field_(field)
+        , invalidateZeroPresence_(invalidateZeroPresence)
+    {
+    }
+
+    [[nodiscard]] bool supportsConcurrentSampling() const noexcept override
+    {
+        return field_.supportsConcurrentSampling();
+    }
+
+    [[nodiscard]] vc::lasagna::NormalPrefetchReport prefetchSamples(
+        const std::vector<cv::Vec3d>& volumePoints) const override
+    {
+        return field_.prefetchSamples(volumePoints);
+    }
+
+    void sampleBatch(
+        const std::vector<cv::Vec3d>& volumePoints,
+        const std::vector<cv::Vec3d>& referenceDirections,
+        int parallelThreads,
+        std::vector<vc::fiber_tracer::FiberPredictionSample>& samples) const override
+    {
+        field_.sampleBatch(volumePoints, referenceDirections, parallelThreads, samples);
+        transformSamples(samples, invalidateZeroPresence_);
+    }
+
+    [[nodiscard]] vc::fiber_tracer::FiberPredictionSample sample(
+        const cv::Vec3d& volumePoint,
+        const cv::Vec3d& referenceDirection) const override
+    {
+        return transformSample(
+            field_.sample(volumePoint, referenceDirection), invalidateZeroPresence_);
+    }
+
+private:
+    const vc::fiber_tracer::FiberPredictionField& field_;
+    bool invalidateZeroPresence_;
+};
+
+[[nodiscard]] bool sameSample(
+    const vc::fiber_tracer::FiberPredictionSample& left,
+    const vc::fiber_tracer::FiberPredictionSample& right)
+{
+    if (left.options.size() != right.options.size())
+        return false;
+    for (size_t index = 0; index < left.options.size(); ++index) {
+        const auto& lhs = left.options[index];
+        const auto& rhs = right.options[index];
+        if (lhs.presence != rhs.presence || lhs.valid != rhs.valid ||
+            lhs.direction[0] != rhs.direction[0] || lhs.direction[1] != rhs.direction[1] ||
+            lhs.direction[2] != rhs.direction[2]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void requireFilterTest(bool condition, const char* message)
+{
+    if (!condition)
+        throw std::runtime_error(std::string("prediction-source filter self-test failed: ") + message);
+}
+
+void runPredictionSourceFilterSelfTest()
+{
+    using vc::fiber_tracer::FiberPredictionSample;
+
+    FiberPredictionSample source;
+    source.options.push_back({cv::Vec3f{1.0f, 2.0f, 3.0f}, 0.75f, true});
+    source.options.push_back({cv::Vec3f{4.0f, 5.0f, 6.0f}, 0.0f, true});
+    source.options.push_back({cv::Vec3f{7.0f, 8.0f, 9.0f}, 0.0f, false});
+    source.options.push_back({cv::Vec3f{10.0f, 11.0f, 12.0f}, 0.25f, false});
+
+    const auto passThrough = transformSample(source, false);
+    requireFilterTest(sameSample(source, passThrough), "pass-through changed an option");
+
+    const auto filtered = transformSample(source, true);
+    requireFilterTest(filtered.options.size() == source.options.size(), "option count changed");
+    requireFilterTest(filtered.options[0].valid, "positive presence valid option was invalidated");
+    requireFilterTest(!filtered.options[1].valid, "zero-presence valid option remained valid");
+    requireFilterTest(!filtered.options[2].valid, "already-invalid zero-presence option changed");
+    requireFilterTest(!filtered.options[3].valid, "already-invalid positive-presence option changed");
+    for (size_t index = 0; index < source.options.size(); ++index) {
+        requireFilterTest(
+            filtered.options[index].presence == source.options[index].presence &&
+                filtered.options[index].direction[0] == source.options[index].direction[0] &&
+                filtered.options[index].direction[1] == source.options[index].direction[1] &&
+                filtered.options[index].direction[2] == source.options[index].direction[2],
+            "filter changed presence or direction");
+    }
+
+    std::vector<FiberPredictionSample> batch{source, source};
+    transformSamples(batch, true);
+    requireFilterTest(
+        sameSample(filtered, batch[0]) && sameSample(filtered, batch[1]),
+        "batch filtering differs from scalar filtering");
+    std::cout << "prediction-source filter self-test passed\n";
+}
 
 [[nodiscard]] std::string requireValue(int& index, int argc, char** argv, const char* name)
 {
@@ -50,17 +211,22 @@ struct Options {
         } else if (argument == "--inference-scaledown-power") {
             options.inferenceScaledownPower = std::stoi(
                 requireValue(index, argc, argv, "--inference-scaledown-power"));
+        } else if (argument == "--self-test-filter") {
+            options.selfTestFilter = true;
         } else if (argument == "--help" || argument == "-h") {
             std::cout
                 << "Usage: native_trace_segment --spans PATH --output PATH "
                 << "[--fiber-manifest PATH] [--normal-manifest PATH] "
-                << "[--inference-scaledown-power 0]\n";
+                << "[--inference-scaledown-power 0]\n"
+                << "       native_trace_segment --self-test-filter\n";
             std::exit(0);
         } else {
             throw std::invalid_argument("unknown option: " + argument);
         }
     }
-    if (options.spansPath.empty() || options.outputPath.empty())
+    if (options.selfTestFilter && (!options.spansPath.empty() || !options.outputPath.empty()))
+        throw std::invalid_argument("--self-test-filter cannot be combined with tracing arguments");
+    if (!options.selfTestFilter && (options.spansPath.empty() || options.outputPath.empty()))
         throw std::invalid_argument("--spans and --output are required");
     return options;
 }
@@ -168,7 +334,8 @@ struct Options {
 [[nodiscard]] Json runSpan(
     const Json& span,
     const Options& options,
-    const std::filesystem::path& spansDirectory)
+    const std::filesystem::path& spansDirectory,
+    PredictionSourceMode sourceMode)
 {
     const std::string fiberManifest = resolveManifestPath(
         spanManifest(span, "fiber_manifest", options.fiberManifest), spansDirectory);
@@ -211,13 +378,21 @@ struct Options {
     request.config.baseVoxelSizeUm = 7.91;
     request.config.parallelThreads = 1;
 
+    const DelegatingPredictionSource delegatedSource(
+        predictionField, sourceMode == PredictionSourceMode::ZeroInvalid);
+    const vc::fiber_tracer::FiberPredictionSource& predictions =
+        sourceMode == PredictionSourceMode::Native
+            ? static_cast<const vc::fiber_tracer::FiberPredictionSource&>(predictionField)
+            : static_cast<const vc::fiber_tracer::FiberPredictionSource&>(delegatedSource);
+
     const auto started = Clock::now();
     const auto result = vc::fiber_tracer::traceFiberSegment(
-        predictionField, request, &normalSampler);
+        predictions, request, &normalSampler);
     const double elapsed = std::chrono::duration<double>(Clock::now() - started).count();
 
-    return {
+    Json output{
         {"case_id", span.at("id")},
+        {"prediction_source_mode", predictionSourceModeName(sourceMode)},
         {"intended_tree_id", span.at("intended_tree_id")},
         {"endpoint_node_ids", span.at("endpoint_node_ids")},
         {"fiber_manifest", fiberManifest},
@@ -229,6 +404,14 @@ struct Options {
         {"reverse_reason", result.reverse.reason},
         {"forward_reached_target_plane", result.forward.reachedTargetPlane},
         {"reverse_reached_target_plane", result.reverse.reachedTargetPlane},
+        {"forward_reached_trace_length", result.forward.reachedTraceLength},
+        {"reverse_reached_trace_length", result.reverse.reachedTraceLength},
+        {"forward_steps", result.forward.steps},
+        {"reverse_steps", result.reverse.steps},
+        {"forward_endpoint_error_trace_voxels", result.forwardEndpointErrorTraceVoxels},
+        {"reverse_endpoint_error_trace_voxels", result.reverseEndpointErrorTraceVoxels},
+        {"max_endpoint_error_trace_voxels", result.maxEndpointErrorTraceVoxels},
+        {"max_endpoint_error_base_voxels", result.maxEndpointErrorBaseVoxels},
         {"meeting_error_trace_voxels", result.meetingErrorTraceVoxels},
         {"meeting_error_base_voxels", result.meetingErrorBaseVoxels},
         {"meeting_error_ratio", result.meetingErrorRatio},
@@ -236,8 +419,13 @@ struct Options {
         {"fused_path_length_trace_voxels", polylineLength(result.fusedLine)},
         {"elapsed_wall_seconds", elapsed},
         {"fused_path_xyz", writePath(result.fusedLine)},
+        {"forward_points_xyz", writePath(result.forward.points)},
+        {"reverse_points_xyz", writePath(result.reverse.points)},
         {"trace_config", traceConfigJson(request.config, options.inferenceScaledownPower)},
     };
+    if (span.contains("competing_tree_id"))
+        output["competing_tree_id"] = span.at("competing_tree_id");
+    return output;
 }
 
 } // namespace
@@ -246,6 +434,10 @@ int main(int argc, char** argv)
 {
     try {
         const Options options = parseArgs(argc, argv);
+        if (options.selfTestFilter) {
+            runPredictionSourceFilterSelfTest();
+            return 0;
+        }
         std::ifstream input(options.spansPath);
         if (!input)
             throw std::runtime_error("cannot open spans file: " + options.spansPath.string());
@@ -260,8 +452,12 @@ int main(int argc, char** argv)
         output["spans_path"] = options.spansPath.string();
         output["results"] = Json::array();
         const auto spansDirectory = options.spansPath.parent_path();
-        for (const auto& span : spans.at("cases"))
-            output["results"].push_back(runSpan(span, options, spansDirectory));
+        for (const auto& span : spans.at("cases")) {
+            for (const auto sourceMode : kPredictionSourceModes) {
+                output["results"].push_back(
+                    runSpan(span, options, spansDirectory, sourceMode));
+            }
+        }
 
         std::ofstream destination(options.outputPath);
         if (!destination)

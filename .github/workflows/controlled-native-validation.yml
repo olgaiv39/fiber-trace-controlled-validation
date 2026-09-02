@@ -97,7 +97,10 @@ jobs:
       - name: Build native harness
         run: cmake --build build-vc-native --target native_trace_segment --parallel 2
 
-      - name: Run four frozen native cases
+      - name: Run prediction-source wrapper contract test
+        run: build-vc-native/bin/native_trace_segment --self-test-filter
+
+      - name: Run three prediction-source modes for four frozen cases
         run: |
           build-vc-native/bin/native_trace_segment \
             --spans generated/spans_local.json --output generated/native_results.json \
