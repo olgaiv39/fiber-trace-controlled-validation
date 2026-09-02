@@ -35,6 +35,7 @@ jobs:
           sparse-checkout: |
             volume-cartographer
             foundation/datasets/fibers-dataset
+            lasagna
           sparse-checkout-cone-mode: true
 
       - name: Verify pinned Villa revision
