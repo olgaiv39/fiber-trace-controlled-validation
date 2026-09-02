@@ -21,7 +21,7 @@ jobs:
     env:
       VILLA_SHA: 908aa7f06e326d6df5cf167ebaab1fc733466987
       VILLA_UPSTREAM_MAIN: ${{ github.workspace }}/villa-upstream-main
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/fiber-trace-controlled-pycache
+      PYTHONPYCACHEPREFIX: /tmp/fiber-trace-controlled-pycache
     steps:
       - name: Checkout validation project
         uses: actions/checkout@v4
