@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "id": "positive_343",
+      "intended_tree_id": "343",
+      "endpoint_node_ids": ["10970", "11011"],
+      "field_tree_ids": ["343"]
+    },
+    {
+      "id": "positive_831",
+      "intended_tree_id": "831",
+      "endpoint_node_ids": ["20126", "23153"],
+      "field_tree_ids": ["831"]
+    },
+    {
+      "id": "difficult_343_with_831",
+      "intended_tree_id": "343",
+      "endpoint_node_ids": ["10970", "11011"],
+      "field_tree_ids": ["343", "831"]
+    },
+    {
+      "id": "difficult_831_with_343",
+      "intended_tree_id": "831",
+      "endpoint_node_ids": ["20126", "23153"],
+      "field_tree_ids": ["343", "831"]
+    }
+  ]
+}

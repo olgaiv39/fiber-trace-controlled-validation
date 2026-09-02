@@ -1,0 +1,127 @@
+name: Controlled native FiberTrace validation
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/controlled-native-validation.yml'
+      - 'CMakeLists.txt'
+      - 'cmake/**'
+      - 'cases/smoke_spans.json'
+      - 'python/**'
+      - 'src/**'
+
+permissions:
+  contents: read
+
+jobs:
+  native-baseline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VILLA_SHA: 908aa7f06e326d6df5cf167ebaab1fc733466987
+      VILLA_UPSTREAM_MAIN: ${{ github.workspace }}/villa-upstream-main
+      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/fiber-trace-controlled-pycache
+    steps:
+      - name: Checkout validation project
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned Villa source
+        uses: actions/checkout@v4
+        with:
+          repository: ScrollPrize/villa
+          ref: 908aa7f06e326d6df5cf167ebaab1fc733466987
+          path: villa-upstream-main
+          sparse-checkout: |
+            volume-cartographer
+            foundation/datasets/fibers-dataset
+          sparse-checkout-cone-mode: true
+
+      - name: Verify pinned Villa revision
+        run: test "$(git -C "$VILLA_UPSTREAM_MAIN" rev-parse HEAD)" = "$VILLA_SHA"
+
+      - name: Install non-GUI native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential clang cmake ninja-build git pkg-config \
+            libblosc-dev libboost-dev libceres-dev libcurl4-openssl-dev \
+            libeigen3-dev liblz4-dev libopencv-dev libsuitesparse-dev \
+            libtiff-dev libzstd-dev nlohmann-json3-dev zlib1g-dev
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependency
+        run: python -m pip install 'numpy>=1.24'
+
+      - name: Run controlled-field tests
+        run: python -m unittest discover -s python/tests -v
+
+      - name: Generate frozen controlled fields
+        run: |
+          python python/generate_controlled_fields.py \
+            --nml "$VILLA_UPSTREAM_MAIN/foundation/datasets/fibers-dataset/fibers_s5_06500z_02000y_04000x_500_v03.nml" \
+            --cases cases/smoke_spans.json --output generated
+
+      - name: Record build provenance
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import platform
+          import subprocess
+          from pathlib import Path
+
+          def command(*args):
+              return subprocess.check_output(args, text=True).strip()
+
+          Path("generated/ci_provenance.json").write_text(json.dumps({
+              "villa_commit": os.environ["VILLA_SHA"],
+              "checked_out_villa_commit": command(
+                  "git", "-C", os.environ["VILLA_UPSTREAM_MAIN"], "rev-parse", "HEAD"),
+              "validation_commit": os.environ.get("GITHUB_SHA", "unknown"),
+              "runner": platform.platform(),
+              "compiler": command("clang++", "--version").splitlines()[0],
+              "cmake": command("cmake", "--version").splitlines()[0],
+          }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+          PY
+
+      - name: Configure non-GUI native harness
+        run: |
+          cmake -S "$VILLA_UPSTREAM_MAIN/volume-cartographer" -B build-vc-native -G Ninja \
+            -DCMAKE_BUILD_TYPE=QuickBuild \
+            -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DVC_BUILD_APPS=OFF -DVC_BUILD_UI_TRACER=OFF \
+            -DVC_BUILD_FLATBOI=OFF -DVC_BUILD_PYTHON=OFF -DVC_TESTING=OFF \
+            -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES="$GITHUB_WORKSPACE/cmake/InjectNativeHarness.cmake" \
+            -DFIBER_TRACE_CONTROLLED_VALIDATION_ROOT="$GITHUB_WORKSPACE"
+
+      - name: Build native harness
+        run: cmake --build build-vc-native --target native_trace_segment --parallel 2
+
+      - name: Run four frozen native cases
+        run: |
+          build-vc-native/bin/native_trace_segment \
+            --spans generated/spans_local.json --output generated/native_results.json \
+            --inference-scaledown-power 0
+
+      - name: Analyze native paths against NML references
+        run: |
+          python python/analyze_results.py --spans generated/spans_local.json \
+            --results generated/native_results.json --output generated/reference_distances.json
+
+      - name: Upload result and provenance JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: controlled-native-fibertrace-results
+          if-no-files-found: warn
+          path: |
+            generated/native_results.json
+            generated/reference_distances.json
+            generated/spans_local.json
+            generated/ci_provenance.json
+            cases/smoke_spans.json

@@ -1,0 +1,4 @@
+build-vc-native*/
+generated/
+__pycache__/
+python/**/__pycache__/
