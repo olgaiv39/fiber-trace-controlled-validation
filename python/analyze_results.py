@@ -53,6 +53,16 @@ def scalar_delta(left: dict[str, Any], right: dict[str, Any], key: str) -> float
     return float(abs(left_value - right_value))
 
 
+def scalar_strictly_equivalent(left: dict[str, Any], right: dict[str, Any], key: str) -> bool:
+    left_value = left.get(key)
+    right_value = right.get(key)
+    if left_value is None or right_value is None:
+        return left_value is None and right_value is None
+    if not isinstance(left_value, (int, float)) or not isinstance(right_value, (int, float)):
+        return False
+    return abs(left_value - right_value) <= COMPARISON_TOLERANCE
+
+
 def compare_results(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     fields = (
         "meeting_error_base_voxels",
@@ -74,7 +84,6 @@ def compare_results(left: dict[str, Any], right: dict[str, Any]) -> dict[str, An
     }
     for field in fields:
         comparison[f"{field}_abs_delta"] = scalar_delta(left, right, field)
-    scalar_deltas = [comparison[f"{field}_abs_delta"] for field in fields]
     comparison["strictly_equivalent"] = (
         comparison["accepted_equal"]
         and comparison["reason_equal"]
@@ -86,7 +95,7 @@ def compare_results(left: dict[str, Any], right: dict[str, Any]) -> dict[str, An
         and comparison["fused_path"]["max_abs_delta"] <= COMPARISON_TOLERANCE
         and comparison["forward_path"]["max_abs_delta"] <= COMPARISON_TOLERANCE
         and comparison["reverse_path"]["max_abs_delta"] <= COMPARISON_TOLERANCE
-        and all(delta is not None and delta <= COMPARISON_TOLERANCE for delta in scalar_deltas)
+        and all(scalar_strictly_equivalent(left, right, field) for field in fields)
     )
     return comparison
 

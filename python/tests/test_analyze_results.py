@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -61,6 +62,43 @@ class AnalyzeResultsTests(unittest.TestCase):
         )
         self.assertEqual(
             comparisons["native_vs_delegated"]["forward_path"]["max_abs_delta"], 0.0)
+
+    def test_optional_endpoint_errors_do_not_confound_delegation_control(self) -> None:
+        path = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0]]
+        native = result("native", accepted=False, path=path)
+        for field in (
+            "forward_endpoint_error_trace_voxels",
+            "reverse_endpoint_error_trace_voxels",
+            "max_endpoint_error_trace_voxels",
+            "max_endpoint_error_base_voxels",
+        ):
+            native[field] = None
+        native["elapsed_wall_seconds"] = 1.0
+        delegated = copy.deepcopy(native)
+        delegated["prediction_source_mode"] = "delegated"
+        delegated["elapsed_wall_seconds"] = 2.0
+
+        comparison = analyze_results.compare_results(native, delegated)
+        self.assertTrue(comparison["strictly_equivalent"])
+        self.assertIsNone(comparison["forward_endpoint_error_trace_voxels_abs_delta"])
+
+        mixed_optional = copy.deepcopy(delegated)
+        mixed_optional["forward_endpoint_error_trace_voxels"] = 0.1
+        self.assertFalse(analyze_results.compare_results(native, mixed_optional)["strictly_equivalent"])
+
+        spans = {"cases": [{"id": "case", "reference_polyline_xyz_local": path}]}
+        zero_invalid = copy.deepcopy(delegated)
+        zero_invalid["prediction_source_mode"] = "zero_invalid"
+        zero_invalid["accepted"] = True
+        zero_invalid["reason"] = "ok"
+        output = analyze_results.analyze(
+            spans, {"results": [native, delegated, zero_invalid]})
+        comparisons = {item["comparison"]: item for item in output["mode_comparisons"]}
+        self.assertTrue(comparisons["native_vs_delegated"]["strictly_equivalent"])
+        self.assertEqual(
+            comparisons["delegated_vs_zero_invalid"]["causal_interpretation"],
+            "UNCONFOUNDED_BY_DELEGATION",
+        )
 
 
 if __name__ == "__main__":
