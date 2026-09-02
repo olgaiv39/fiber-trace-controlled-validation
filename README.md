@@ -17,7 +17,7 @@ workflow, using Clang as in current upstream VC CI. It checks out villa at
 `908aa7f06e326d6df5cf167ebaab1fc733466987`, generates the fields, builds only
 the injected non-GUI target, and runs the frozen four cases. To reproduce that
 run on Ubuntu 24.04 after checking out this project and pinned villa side by
-side, install the CI packages and run:
+side, install the listed native packages and run:
 
 ```sh
 sudo apt-get update

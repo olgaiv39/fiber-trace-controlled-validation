@@ -13,11 +13,17 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 jobs:
   native-baseline:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    container:
+      image: ghcr.io/scrollprize/vc3d-deps/linux:sha-0c371b1d472c5281b703d65517e980d945da693f
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     env:
       VILLA_SHA: 908aa7f06e326d6df5cf167ebaab1fc733466987
       VILLA_UPSTREAM_MAIN: ${{ github.workspace }}/villa-upstream-main
@@ -41,35 +47,23 @@ jobs:
       - name: Verify pinned Villa revision
         run: test "$(git -C "$VILLA_UPSTREAM_MAIN" rev-parse HEAD)" = "$VILLA_SHA"
 
-      - name: Install non-GUI native dependencies
+      - name: Create validation Python environment
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential clang cmake ninja-build git pkg-config \
-            libblosc-dev libboost-dev libceres-dev libcurl4-openssl-dev \
-            libeigen3-dev liblz4-dev libopencv-dev libsuitesparse-dev \
-            libtiff-dev libzstd-dev nlohmann-json3-dev zlib1g-dev
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install Python dependency
-        run: python -m pip install 'numpy>=1.24'
+          python3 -m venv .venv
+          .venv/bin/python -m pip install 'numpy>=1.24'
 
       - name: Run controlled-field tests
-        run: python -m unittest discover -s python/tests -v
+        run: .venv/bin/python -m unittest discover -s python/tests -v
 
       - name: Generate frozen controlled fields
         run: |
-          python python/generate_controlled_fields.py \
+          .venv/bin/python python/generate_controlled_fields.py \
             --nml "$VILLA_UPSTREAM_MAIN/foundation/datasets/fibers-dataset/fibers_s5_06500z_02000y_04000x_500_v03.nml" \
             --cases cases/smoke_spans.json --output generated
 
       - name: Record build provenance
         run: |
-          python - <<'PY'
+          .venv/bin/python - <<'PY'
           import json
           import os
           import platform
@@ -111,7 +105,7 @@ jobs:
 
       - name: Analyze native paths against NML references
         run: |
-          python python/analyze_results.py --spans generated/spans_local.json \
+          .venv/bin/python python/analyze_results.py --spans generated/spans_local.json \
             --results generated/native_results.json --output generated/reference_distances.json
 
       - name: Upload result and provenance JSON
