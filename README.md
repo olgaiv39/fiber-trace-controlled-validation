@@ -10,18 +10,6 @@ source-to-base scale 1. The native harness therefore uses inference scaledown
 power 0. Normals are deliberately artificial: constant +Z (`grad_mag=255`,
 `nx=ny=128`) so normal-aware terms remain active but invariant
 
-## Local preparation
-
-On the constrained Intel Mac, field generation and analysis utilities work;
-the pinned native C++ build does not. Run from this directory:
-
-```sh
-python3 -m unittest discover -s python/tests -v
-python3 python/generate_controlled_fields.py \
-  --nml ../villa-upstream-main/foundation/datasets/fibers-dataset/fibers_s5_06500z_02000y_04000x_500_v03.nml \
-  --cases cases/smoke_spans.json --output generated
-```
-
 ## Linux native validation
 
 The recommended native baseline is the included Ubuntu 24.04 GitHub Actions
