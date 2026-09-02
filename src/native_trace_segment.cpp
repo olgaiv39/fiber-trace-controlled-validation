@@ -72,6 +72,36 @@ struct Options {
     return {point.at(0).get<double>(), point.at(1).get<double>(), point.at(2).get<double>()};
 }
 
+[[nodiscard]] std::vector<cv::Vec3d> readReferenceLine(const Json& span)
+{
+    if (!span.contains("reference_line_xyz_local") ||
+        !span.at("reference_line_xyz_local").is_array() ||
+        span.at("reference_line_xyz_local").size() < 2) {
+        throw std::runtime_error(
+            "span must contain a reference_line_xyz_local array with at least two points");
+    }
+    std::vector<cv::Vec3d> line;
+    line.reserve(span.at("reference_line_xyz_local").size());
+    for (const auto& point : span.at("reference_line_xyz_local"))
+        line.push_back(readPoint(point));
+    return line;
+}
+
+[[nodiscard]] size_t readReferenceIndex(
+    const Json& span,
+    const char* key,
+    size_t lineSize)
+{
+    if (!span.contains(key) ||
+        (!span.at(key).is_number_integer() && !span.at(key).is_number_unsigned())) {
+        throw std::runtime_error(std::string("span must contain integer ") + key);
+    }
+    const auto value = span.at(key).get<long long>();
+    if (value < 0 || static_cast<size_t>(value) >= lineSize)
+        throw std::runtime_error(std::string("span ") + key + " is out of range");
+    return static_cast<size_t>(value);
+}
+
 [[nodiscard]] Json writePoint(const cv::Vec3d& point)
 {
     return Json::array({point[0], point[1], point[2]});
@@ -160,13 +190,23 @@ struct Options {
 
     if (!span.contains("endpoint_xyz_local") || span.at("endpoint_xyz_local").size() != 2)
         throw std::runtime_error("span must contain exactly two endpoint_xyz_local points");
+    const cv::Vec3d startEndpoint = readPoint(span.at("endpoint_xyz_local").at(0));
+    const cv::Vec3d targetEndpoint = readPoint(span.at("endpoint_xyz_local").at(1));
+    std::vector<cv::Vec3d> referenceLine = readReferenceLine(span);
+    const size_t startIndex = readReferenceIndex(
+        span, "start_index", referenceLine.size());
+    const size_t targetIndex = readReferenceIndex(
+        span, "target_index", referenceLine.size());
+    constexpr double kEndpointTolerance = 1.0e-9;
+    if (cv::norm(referenceLine[startIndex] - startEndpoint) > kEndpointTolerance ||
+        cv::norm(referenceLine[targetIndex] - targetEndpoint) > kEndpointTolerance) {
+        throw std::runtime_error(
+            "span reference-line indices do not match endpoint_xyz_local coordinates");
+    }
     vc::fiber_tracer::FiberTraceSegmentRequest request;
-    request.referenceLine = {
-        readPoint(span.at("endpoint_xyz_local").at(0)),
-        readPoint(span.at("endpoint_xyz_local").at(1)),
-    };
-    request.startIndex = 0;
-    request.targetIndex = 1;
+    request.referenceLine = std::move(referenceLine);
+    request.startIndex = startIndex;
+    request.targetIndex = targetIndex;
     request.config.traceToBaseScale = scales.traceToBaseScale;
     request.config.baseVoxelSizeUm = 7.91;
     request.config.parallelThreads = 1;

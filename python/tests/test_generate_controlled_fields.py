@@ -120,6 +120,53 @@ class ControlledFieldTests(unittest.TestCase):
             self.assertEqual(255.0 / (normal_manifest["grad_mag_encode_scale"] /
                                       normal_manifest["grad_mag_factor"]), 1.0)
 
+            cases_by_id = {item["id"]: item for item in spans["cases"]}
+            expected_references = {
+                "positive_343": ("343", 39, 9, 29, "10970", "11011"),
+                "positive_831": ("831", 44, 11, 33, "20126", "23153"),
+            }
+            for case_id, (
+                tree_id,
+                line_size,
+                start_index,
+                target_index,
+                start_node_id,
+                target_node_id,
+            ) in expected_references.items():
+                case = cases_by_id[case_id]
+                tree = generator.load_simple_open_tree(nml, tree_id)
+                self.assertEqual(tree.ordered_node_ids[start_index], start_node_id)
+                self.assertEqual(tree.ordered_node_ids[target_index], target_node_id)
+                self.assertEqual(len(case["reference_line_xyz_local"]), line_size)
+                self.assertEqual(case["start_index"], start_index)
+                self.assertEqual(case["target_index"], target_index)
+                self.assertEqual(
+                    case["reference_line_xyz_local"][start_index],
+                    case["endpoint_xyz_local"][0],
+                )
+                self.assertEqual(
+                    case["reference_line_xyz_local"][target_index],
+                    case["endpoint_xyz_local"][1],
+                )
+
+            for positive_id, difficult_id in (
+                ("positive_343", "difficult_343_with_831"),
+                ("positive_831", "difficult_831_with_343"),
+            ):
+                positive = cases_by_id[positive_id]
+                difficult = cases_by_id[difficult_id]
+                for key in (
+                    "intended_tree_id",
+                    "endpoint_node_ids",
+                    "endpoint_xyz_local",
+                    "reference_line_xyz_local",
+                    "start_index",
+                    "target_index",
+                ):
+                    self.assertEqual(positive[key], difficult[key])
+                self.assertNotEqual(positive["fiber_manifest"], difficult["fiber_manifest"])
+                self.assertNotEqual(positive["field_tree_ids"], difficult["field_tree_ids"])
+
 
 if __name__ == "__main__":
     unittest.main()

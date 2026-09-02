@@ -273,6 +273,15 @@ def generate(nml_path: Path, cases_path: Path, output_dir: Path, tube_radius: fl
     generated_cases = []
     for item in source_cases:
         case_id = item["id"]
+        intended_tree = trees[str(item["intended_tree_id"])]
+        start_node_id, target_node_id = map(str, item["endpoint_node_ids"])
+        try:
+            start_index = intended_tree.ordered_node_ids.index(start_node_id)
+            target_index = intended_tree.ordered_node_ids.index(target_node_id)
+        except ValueError as exc:
+            raise ValueError(
+                f"case {case_id!r} endpoint is not on intended tree {intended_tree.tree_id}"
+            ) from exc
         polylines = [tree_subpaths[str(tree_id)] for tree_id in item["field_tree_ids"]]
         presence, nx, ny = rasterize_prediction(shape_zyx, origin_xyz, polylines, tube_radius)
         field_root = output_dir / "fields" / case_id
@@ -284,10 +293,22 @@ def generate(nml_path: Path, cases_path: Path, output_dir: Path, tube_radius: fl
             name: (f"{name}.zarr", [name]) for name in arrays
         })
         local_reference = references[case_id] - origin_xyz
+        full_reference_local = intended_tree.ordered_points - origin_xyz
+        endpoint_xyz_local = local_reference[[0, -1]]
+        if not (
+            np.array_equal(full_reference_local[start_index], endpoint_xyz_local[0])
+            and np.array_equal(full_reference_local[target_index], endpoint_xyz_local[1])
+        ):
+            raise ValueError(
+                f"case {case_id!r} full-line endpoint indices do not match selected endpoints"
+            )
         competing_ids = [str(tree_id) for tree_id in item["field_tree_ids"] if str(tree_id) != str(item["intended_tree_id"])]
         generated_cases.append({
             **item,
-            "endpoint_xyz_local": local_reference[[0, -1]].tolist(),
+            "endpoint_xyz_local": endpoint_xyz_local.tolist(),
+            "reference_line_xyz_local": full_reference_local.tolist(),
+            "start_index": start_index,
+            "target_index": target_index,
             "reference_polyline_xyz_local": local_reference.tolist(),
             "reference_polyline_xyz_nml": references[case_id].tolist(),
             "competing_tree_id": int(competing_ids[0]) if len(competing_ids) == 1 else None,
